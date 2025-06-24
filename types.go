@@ -27,6 +27,11 @@ const (
 	LineNumbersTable
 	// Line higlight style.
 	LineHighlight
+
+	LineAdded
+
+	LineRemoved
+
 	// Line numbers table wrapper style.
 	LineTable
 	// Line numbers table TD wrapper style.
@@ -227,6 +232,8 @@ var (
 		LineNumbers:      "ln",
 		LineNumbersTable: "lnt",
 		LineHighlight:    "hl",
+		LineAdded:        "la",
+		LineRemoved:      "lr",
 		LineTable:        "lntable",
 		LineTableTD:      "lntd",
 		LineLink:         "lnlinks",

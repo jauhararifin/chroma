@@ -121,6 +121,15 @@ func HighlightLines(ranges [][2]int) Option {
 	}
 }
 
+func DiffLines(added, removed []int) Option {
+	return func(f *Formatter) {
+		f.addedLines = added
+		f.removedLines = removed
+		sort.Ints(f.addedLines)
+		sort.Ints(f.removedLines)
+	}
+}
+
 // BaseLineNumber sets the initial number to start line numbering at. Defaults to 1.
 func BaseLineNumber(n int) Option {
 	return func(f *Formatter) {
@@ -207,6 +216,8 @@ type Formatter struct {
 	linkableLineNumbers   bool
 	lineNumbersIDPrefix   string
 	highlightRanges       highlightRanges
+	addedLines            []int
+	removedLines          []int
 	baseLineNumber        int
 }
 
@@ -244,6 +255,8 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 	lines := chroma.SplitTokensIntoLines(tokens)
 	lineDigits := len(strconv.Itoa(f.baseLineNumber + len(lines) - 1))
 	highlightIndex := 0
+	addedLineIndex := 0
+	removedLineIndex := 0
 
 	if wrapInTable {
 		// List line numbers in its own <td>
@@ -261,6 +274,22 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 				fmt.Fprintf(w, "<span%s>", f.styleAttr(css, chroma.LineHighlight))
 			}
 
+			added, next := f.shouldAddedLine(addedLineIndex, line)
+			if next {
+				addedLineIndex++
+			}
+			if added {
+				panic("todo")
+			}
+
+			removed, next := f.shouldRemovedLine(removedLineIndex, line)
+			if next {
+				removedLineIndex++
+			}
+			if removed {
+				panic("todo")
+			}
+
 			fmt.Fprintf(w, "<span%s%s>%s\n</span>", f.styleAttr(css, chroma.LineNumbersTable), f.lineIDAttribute(line), f.lineTitleWithLinkIfNeeded(css, lineDigits, line))
 
 			if highlight {
@@ -275,6 +304,8 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 	fmt.Fprintf(w, "%s", f.preWrapper.Start(true, f.styleAttr(css, chroma.PreWrapper)))
 
 	highlightIndex = 0
+	addedLineIndex = 0
+	removedLineIndex = 0
 	for index, tokens := range lines {
 		// 1-based line number.
 		line := f.baseLineNumber + index
@@ -283,21 +314,46 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 			highlightIndex++
 		}
 
+		added, next := f.shouldAddedLine(addedLineIndex, line)
+		if next {
+			addedLineIndex++
+		}
+
+		removed, next := f.shouldRemovedLine(removedLineIndex, line)
+		if next {
+			removedLineIndex++
+		}
+
 		if !(f.preventSurroundingPre || f.inlineCode) {
 			// Start of Line
 			fmt.Fprint(w, `<span`)
 
-			if highlight {
-				// Line + LineHighlight
-				if f.Classes {
-					fmt.Fprintf(w, ` class="%s %s"`, f.class(chroma.Line), f.class(chroma.LineHighlight))
-				} else {
-					fmt.Fprintf(w, ` style="%s %s"`, css[chroma.Line], css[chroma.LineHighlight])
+			if f.Classes {
+				classes := []string{f.class(chroma.Line)}
+				if highlight {
+					classes = append(classes, f.class(chroma.LineHighlight))
 				}
-				fmt.Fprint(w, `>`)
+				if added {
+					classes = append(classes, f.class(chroma.LineAdded))
+				}
+				if removed {
+					classes = append(classes, f.class(chroma.LineRemoved))
+				}
+				fmt.Fprintf(w, ` class="%s"`, strings.Join(classes, " "))
 			} else {
-				fmt.Fprintf(w, "%s>", f.styleAttr(css, chroma.Line))
+				styles := []string{css[chroma.Line]}
+				if highlight {
+					styles = append(styles, css[chroma.LineHighlight])
+				}
+				if added {
+					styles = append(styles, css[chroma.LineAdded])
+				}
+				if removed {
+					styles = append(styles, css[chroma.LineRemoved])
+				}
+				fmt.Fprintf(w, ` style="%s"`, strings.Join(styles, " "))
 			}
+			fmt.Fprintf(w, `>`)
 
 			// Line number
 			if f.lineNumbers && !wrapInTable {
@@ -369,6 +425,26 @@ func (f *Formatter) shouldHighlight(highlightIndex, line int) (bool, bool) {
 		}
 	}
 	return false, next
+}
+
+func (f *Formatter) shouldAddedLine(index, line int) (bool, bool) {
+	next := false
+	for index < len(f.addedLines) && line > f.addedLines[index] {
+		index++
+		next = true
+	}
+	result := index < len(f.addedLines) && line == f.addedLines[index]
+	return result, next
+}
+
+func (f *Formatter) shouldRemovedLine(index, line int) (bool, bool) {
+	next := false
+	for index < len(f.removedLines) && line > f.removedLines[index] {
+		index++
+		next = true
+	}
+	result := index < len(f.removedLines) && line == f.removedLines[index]
+	return result, next
 }
 
 func (f *Formatter) class(t chroma.TokenType) string {
@@ -505,7 +581,7 @@ func (f *Formatter) styleToCSS(style *chroma.Style) map[chroma.TokenType]string 
 	classes[chroma.Background] += `;` + f.tabWidthStyle()
 	classes[chroma.PreWrapper] += classes[chroma.Background]
 	// Make PreWrapper a grid to show highlight style with full width.
-	if len(f.highlightRanges) > 0 && f.customCSS[chroma.PreWrapper] == `` {
+	if (len(f.highlightRanges) > 0 || len(f.addedLines) > 0 || len(f.removedLines) > 0) && f.customCSS[chroma.PreWrapper] == `` {
 		classes[chroma.PreWrapper] += `display: grid;`
 	}
 	// Make PreWrapper wrap long lines.
