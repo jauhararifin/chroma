@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,6 +131,22 @@ func DiffLines(added, removed []int) Option {
 	}
 }
 
+func LineResets(resets []LineReset) Option {
+	return func(f *Formatter) {
+		f.lineResets = resets
+		sort.Slice(f.lineResets, func(i, j int) bool {
+			return f.lineResets[i].Line < f.lineResets[j].Line
+		})
+	}
+}
+
+func LineSkips(skips []int) Option {
+	return func(f *Formatter) {
+		f.lineSkips = skips
+		sort.Ints(f.lineSkips)
+	}
+}
+
 // BaseLineNumber sets the initial number to start line numbering at. Defaults to 1.
 func BaseLineNumber(n int) Option {
 	return func(f *Formatter) {
@@ -216,6 +233,8 @@ type Formatter struct {
 	linkableLineNumbers   bool
 	lineNumbersIDPrefix   string
 	highlightRanges       highlightRanges
+	lineResets            []LineReset
+	lineSkips             []int
 	addedLines            []int
 	removedLines          []int
 	baseLineNumber        int
@@ -226,6 +245,11 @@ type highlightRanges [][2]int
 func (h highlightRanges) Len() int           { return len(h) }
 func (h highlightRanges) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h highlightRanges) Less(i, j int) bool { return h[i][0] < h[j][0] }
+
+type LineReset struct {
+	Line  int
+	Reset int
+}
 
 func (f *Formatter) Format(w io.Writer, style *chroma.Style, iterator chroma.Iterator) (err error) {
 	return f.writeHTML(w, style, iterator.Tokens())
@@ -254,6 +278,9 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 
 	lines := chroma.SplitTokensIntoLines(tokens)
 	lineDigits := len(strconv.Itoa(f.baseLineNumber + len(lines) - 1))
+	if len(f.lineResets) > 0 && lineDigits < 3 {
+		lineDigits = 3
+	}
 	highlightIndex := 0
 	addedLineIndex := 0
 	removedLineIndex := 0
@@ -274,7 +301,7 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 				fmt.Fprintf(w, "<span%s>", f.styleAttr(css, chroma.LineHighlight))
 			}
 
-			added, next := f.shouldAddedLine(addedLineIndex, line)
+			added, next := f.shouldAddedLine(addedLineIndex, index+1)
 			if next {
 				addedLineIndex++
 			}
@@ -282,7 +309,7 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 				panic("todo")
 			}
 
-			removed, next := f.shouldRemovedLine(removedLineIndex, line)
+			removed, next := f.shouldRemovedLine(removedLineIndex, index+1)
 			if next {
 				removedLineIndex++
 			}
@@ -290,7 +317,7 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 				panic("todo")
 			}
 
-			fmt.Fprintf(w, "<span%s%s>%s\n</span>", f.styleAttr(css, chroma.LineNumbersTable), f.lineIDAttribute(line), f.lineTitleWithLinkIfNeeded(css, lineDigits, line))
+			fmt.Fprintf(w, "<span%s%s>%s\n</span>", f.styleAttr(css, chroma.LineNumbersTable), f.lineIDAttribute(line), f.lineTitleWithLinkIfNeeded(css, lineDigits, line, false, false))
 
 			if highlight {
 				fmt.Fprintf(w, "</span>")
@@ -306,22 +333,38 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 	highlightIndex = 0
 	addedLineIndex = 0
 	removedLineIndex = 0
+	displayedLine := f.baseLineNumber - 1
 	for index, tokens := range lines {
+		shouldSkipLineDisplay := slices.Contains(f.lineSkips, index+1)
+		if !shouldSkipLineDisplay {
+			displayedLine++
+		}
+
 		// 1-based line number.
 		line := f.baseLineNumber + index
+
 		highlight, next := f.shouldHighlight(highlightIndex, line)
 		if next {
 			highlightIndex++
 		}
 
-		added, next := f.shouldAddedLine(addedLineIndex, line)
+		added, next := f.shouldAddedLine(addedLineIndex, index+1)
 		if next {
 			addedLineIndex++
 		}
 
-		removed, next := f.shouldRemovedLine(removedLineIndex, line)
+		removed, next := f.shouldRemovedLine(removedLineIndex, index+1)
 		if next {
 			removedLineIndex++
+		}
+
+		shouldReset := false
+		for _, x := range f.lineResets {
+			if x.Line == index+1 {
+				shouldReset = true
+				displayedLine = x.Reset - 1
+				break
+			}
 		}
 
 		if !(f.preventSurroundingPre || f.inlineCode) {
@@ -356,8 +399,9 @@ func (f *Formatter) writeHTML(w io.Writer, style *chroma.Style, tokens []chroma.
 			fmt.Fprintf(w, `>`)
 
 			// Line number
+			//m this is the line number
 			if f.lineNumbers && !wrapInTable {
-				fmt.Fprintf(w, "<span%s%s>%s</span>", f.styleAttr(css, chroma.LineNumbers), f.lineIDAttribute(line), f.lineTitleWithLinkIfNeeded(css, lineDigits, line))
+				fmt.Fprintf(w, "<span%s%s>%s</span>", f.styleAttr(css, chroma.LineNumbers), f.lineIDAttribute(displayedLine), f.lineTitleWithLinkIfNeeded(css, lineDigits, displayedLine, shouldReset, shouldSkipLineDisplay))
 			}
 
 			fmt.Fprintf(w, `<span%s>`, f.styleAttr(css, chroma.CodeLine))
@@ -400,8 +444,13 @@ func (f *Formatter) lineIDAttribute(line int) string {
 	return fmt.Sprintf(" id=\"%s\"", f.lineID(line))
 }
 
-func (f *Formatter) lineTitleWithLinkIfNeeded(css map[chroma.TokenType]string, lineDigits, line int) string {
+func (f *Formatter) lineTitleWithLinkIfNeeded(css map[chroma.TokenType]string, lineDigits, line int, shouldReset, shouldSkip bool) string {
 	title := fmt.Sprintf("%*d", lineDigits, line)
+	if shouldSkip {
+		title = "   "
+	} else if shouldReset {
+		title = "..."
+	}
 	if !f.linkableLineNumbers {
 		return title
 	}
